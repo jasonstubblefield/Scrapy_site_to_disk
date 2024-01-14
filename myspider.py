@@ -52,7 +52,8 @@ class scrapySiteToDisk(scrapy.Spider):
                     'images': list(article.images),
                     'videos': list(article.movies),
                     'keywords': list(article.keywords),
-                    'summary': article.summary
+                    'summary': article.summary,
+                    'url': response.url
                 }
 
                 # store the data
