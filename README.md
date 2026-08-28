@@ -1,35 +1,73 @@
 # Site to Disk
 
-This is a scrapy spider that crawls site(s) and stores them to the disk.
+A [Scrapy](https://scrapy.org/) spider that crawls a website and stores every page to disk twice: the raw HTML, and a structured JSON document extracted with [Newspaper3k](https://newspaper.readthedocs.io/). The JSON documents include title, authors, publish date, body text, word count, keywords, and images, shaped so they can be bulk-loaded directly into a search engine such as Solr, OpenSearch, or Elasticsearch.
 
-Each html page is parsed and stored as a json file.
+This is the front half of a search ingestion pipeline: crawl, extract, and persist. What you feed the documents into afterward is up to you.
 
-The html is stored as a html file.
+## How it works
 
-### Prerequisites
+```mermaid
+flowchart LR
+    A[Seed URL] --> B[Scrapy spider]
+    B --> C[Fetch page]
+    C --> D[Save raw HTML<br/>html/md5.html]
+    C --> E[Newspaper3k<br/>content extraction]
+    E --> F[Save JSON document<br/>json/md5.json]
+    C --> G[Follow links<br/>within allowed domains]
+    G --> B
+```
 
-Make sure you have scrapy installed.
+Every page gets a stable document id (the MD5 of its URL), which keeps re-crawls idempotent: crawling the same site twice overwrites documents instead of duplicating them. Links to image files are skipped, and the crawl stays inside the allowed domains.
 
-Make sure you have Newspaper3k installed.
+## Installation
 
-### Configuration
+```bash
+git clone https://github.com/jasonstubblefield/Scrapy_site_to_disk.git
+cd Scrapy_site_to_disk
+python3 -m venv env
+source env/bin/activate
+pip install -r requirements.txt
+```
 
-Change the seed url and allowed hostnames in the runspider.py file.
+## Usage
 
-### Usage
+Crawl the default site (apache.org):
 
-Run the spider ...
+```bash
+scrapy runspider myspider.py
+```
 
-`scrapy runspider myspider.py`
+Crawl a site of your choosing:
 
-### Output
+```bash
+scrapy runspider myspider.py -a start_url=https://example.com -a allowed=example.com,www.example.com
+```
 
-The HTML will be stored in a html folder. 
+| Argument | Purpose |
+|----------|---------|
+| `start_url` | Seed URL where the crawl begins |
+| `allowed` | Comma-separated list of domains the crawl may visit |
 
-The JSON will be stored in a json folder
+## Output
 
-### Questions
+- `html/` holds the raw HTML of every crawled page, one file per page.
+- `json/` holds the extracted JSON documents. Pages with no extractable body text get an HTML file but no JSON file.
 
-if you like this script and/or want to ask questions check out my personal site at https://jasonstubblefield.github.io
+A sample JSON document:
 
+```json
+{
+  "id": "9a0364b9e99bb480dd25e1f0284c8555",
+  "title": "Example Page",
+  "authors": [],
+  "publish_date": null,
+  "text": "The extracted body text...",
+  "word_count": 542,
+  "keywords": [],
+  "url": "https://example.com/page"
+}
+```
 
+## License
+
+MIT. See [LICENSE](LICENSE).

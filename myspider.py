@@ -1,80 +1,82 @@
+"""Scrapy spider that crawls a site and stores every page to disk.
+
+Each crawled page is saved twice: the raw HTML under html/ and a
+structured JSON document (parsed with Newspaper3k) under json/. The JSON
+documents are shaped for direct ingestion into a search engine such as
+Solr, OpenSearch, or Elasticsearch.
+"""
+
 import hashlib
 import json
 import os
-import scrapy
 
-# import the newspaper parser
+import scrapy
 from newspaper import Article
 
-# build the scrapy object
-class scrapySiteToDisk(scrapy.Spider):
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp')
 
-    # configure the crawl
-    name = 'site_so_disk'
-    allowed_domains = ['www.apache.org', 'apache.org', 'solr.apache.org', 'nutch.apache.org']
-    start_urls = ['https://www.apache.org/']
 
-    # parse the fetched html document
+class ScrapySiteToDisk(scrapy.Spider):
+    name = 'site_to_disk'
+
+    # Defaults; override at the command line with -a, for example:
+    # scrapy runspider myspider.py -a start_url=https://example.com -a allowed=example.com,www.example.com
+    def __init__(self, start_url='https://www.apache.org/', allowed=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.start_urls = [start_url]
+        if allowed:
+            self.allowed_domains = [d.strip() for d in allowed.split(',')]
+        else:
+            self.allowed_domains = [
+                'www.apache.org',
+                'apache.org',
+                'solr.apache.org',
+                'nutch.apache.org',
+            ]
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.html_dir = os.path.join(base_dir, 'html')
+        self.json_dir = os.path.join(base_dir, 'json')
+        os.makedirs(self.html_dir, exist_ok=True)
+        os.makedirs(self.json_dir, exist_ok=True)
+
     def parse(self, response):
-        for title in response.css('head title::text').getall():
-            yield {'title': title.strip(), 'url': response.url}
+        # A stable document id derived from the URL keeps re-crawls idempotent.
+        doc_id = hashlib.md5(response.url.encode('utf-8')).hexdigest()
+        title = (response.css('head title::text').get() or '').strip()
+        yield {'title': title, 'url': response.url}
 
-            # Save the raw HTML content to a text file
-            md5_hash = hashlib.md5(response.url.encode('utf-8')).hexdigest()
-            html_file_name = f"{md5_hash}.html"
-            html_folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "html")
-            os.makedirs(html_folder_path, exist_ok=True)
-            html_file_path = os.path.join(html_folder_path, html_file_name)
-            with open(html_file_path, 'w', encoding='utf-8') as f:
-                f.write(response.text)
+        # Save the raw HTML.
+        html_path = os.path.join(self.html_dir, f'{doc_id}.html')
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(response.text)
 
-            # Parse the HTML using Newspaper3k and save the JSON result to another file
-            article = Article(response.url)
-            article.set_html(response.text)
-            article.parse()
+        # Parse the page with Newspaper3k and save the structured result.
+        article = Article(response.url)
+        article.set_html(response.text)
+        article.parse()
 
-            # get the word count of the main body text
-            word_count = len(article.text.split())
+        word_count = len(article.text.split())
+        if word_count > 0:
+            parsed_data = {
+                '_id': doc_id,
+                'id': doc_id,
+                'title': article.title,
+                'authors': article.authors,
+                'publish_date': article.publish_date.isoformat() if article.publish_date else None,
+                'text': article.text,
+                'word_count': word_count,
+                'top_image': article.top_image,
+                'images': list(article.images),
+                'videos': list(article.movies),
+                'keywords': list(article.keywords),
+                'summary': article.summary,
+                'url': response.url,
+            }
+            json_path = os.path.join(self.json_dir, f'{doc_id}.json')
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(parsed_data, f, ensure_ascii=False, indent=2)
 
-            # only save the file if the body has text
-            if word_count > 0:
-
-                # build the array
-                parsed_data = {
-                    '_id': md5_hash,
-                    'id': md5_hash,
-                    'title': article.title,
-                    'authors': article.authors,
-                    'publish_date': article.publish_date.isoformat() if article.publish_date else None,
-                    'text': article.text,
-                    'word_count': word_count,
-                    'top_image': article.top_image,
-                    'images': list(article.images),
-                    'videos': list(article.movies),
-                    'keywords': list(article.keywords),
-                    'summary': article.summary,
-                    'url': response.url
-                }
-
-                # store the data
-                json_file_name = f"{md5_hash}.json"
-                json_folder_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "json")
-                os.makedirs(json_folder_path, exist_ok=True)
-                json_file_path = os.path.join(json_folder_path, json_file_name)
-                with open(json_file_path, 'w', encoding='utf-8') as f:
-                    json.dump(parsed_data, f, ensure_ascii=False, indent=2)
-
-        # recursively get the next page from the que
+        # Follow links, skipping direct links to image files.
         for next_page in response.css('a::attr(href)').getall():
-
-            # weed out the images
-            if next_page is not None and not self.is_image_url(next_page):
-
-                # crawl the next page
+            if next_page and not next_page.lower().endswith(IMAGE_EXTENSIONS):
                 yield response.follow(next_page, self.parse)
-
-    # weed out image files and other unwanted extensions
-    @staticmethod
-    def is_image_url(url):
-        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
-        return any(url.lower().endswith(ext) for ext in image_extensions)
